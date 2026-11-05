@@ -3,25 +3,51 @@ let S = { settings: {}, catalogs: [], products: [] };
 let filter = 'all';
 
 async function boot() {
-  try { S = await (await fetch('products.json?v=' + Date.now())).json(); S.products = S.products.filter(p => p.visible); }
-  catch { $('#grid').innerHTML = '<div class="empty">Could not load the shop. Please refresh.</div>'; return; }
-  const s = S.settings;
-  document.title = s.storeName + ' | ' + s.tagline;
-  $('#heroTitle').textContent = s.heroTitle;
-  $('#heroText').textContent = s.heroText;
-  $('#deliveryNote').textContent = s.deliveryNote;
-  $('#footName').textContent = s.storeName;
-  $('#year').textContent = new Date().getFullYear();
-  $('#welcomeLine').textContent = s.welcomeLine;
-  $('#welcomeNote').textContent = s.welcomeNote;
-  const ig = s.instagram ? `<a href="https://instagram.com/${encodeURIComponent(s.instagram)}" target="_blank" rel="noopener">@${esc(s.instagram)}</a>` : '';
-  $('#contact').innerHTML = [esc(s.phone), esc(s.email), ig].filter(Boolean).join(' &middot; ');
-  const m = [s.tagline, 'Cash on delivery', 'Made in Egypt', 'Minimum order ' + egp(s.minOrder)];
-  const row = m.map(x => `<span>${esc(x)}</span>`).join('');
-  $('#marquee').innerHTML = row + row + row + row;
-  renderChips(); renderGrid(); renderCart();
-  let known = false; try { known = !!localStorage.getItem('dew_customer'); } catch {}
-  if (!known) $('#welcomeOv').classList.add('open');
+  try {
+    // 1. Load Store Settings from Supabase
+    const { data: settings, error: sErr } = await supabase.from('store_settings').select('*').limit(1).single();
+    if (sErr) throw sErr;
+    S.settings = settings;
+
+    // 2. Load Catalogs from Supabase
+    const { data: catalogs, error: cErr } = await supabase.from('catalogs').select('*');
+    if (cErr) throw cErr;
+    S.catalogs = catalogs;
+
+    // 3. Load Products from Supabase
+    const { data: products, error: pErr } = await supabase.from('products').select('*').eq('visible', true);
+    if (pErr) throw pErr;
+    S.products = products;
+
+    const s = S.settings;
+    document.title = s.store_name + ' | ' + s.tagline;
+    $('#heroTitle').textContent = s.hero_title;
+    $('#heroText').textContent = s.hero_text;
+    $('#deliveryNote').textContent = s.delivery_note;
+    $('#footName').textContent = s.store_name;
+    $('#year').textContent = new Date().getFullYear();
+    $('#welcomeLine').textContent = s.welcome_line;
+    $('#welcomeNote').textContent = s.welcome_note;
+
+    const ig = s.instagram ? `<a href="https://instagram.com/${encodeURIComponent(s.instagram)}" target="_blank" rel="noopener">@${esc(s.instagram)}</a>` : '';
+    $('#contact').innerHTML = [esc(s.phone), esc(s.email), ig].filter(Boolean).join(' &middot; ');
+    
+    const m = [s.tagline, 'Cash on delivery', 'Made in Egypt', 'Minimum order ' + egp(s.min_order)];
+    const row = m.map(x => `<span>${esc(x)}</span>`).join('');
+    $('#marquee').innerHTML = row + row + row + row;
+
+    renderChips(); 
+    renderGrid(); 
+    renderCart();
+
+    let known = false; 
+    try { known = !!localStorage.getItem('dew_customer'); } catch {}
+    if (!known) $('#welcomeOv').classList.add('open');
+  }
+  catch (e) { 
+    console.error(e);
+    $('#grid').innerHTML = '<div class="empty">Could not load the shop. Please refresh.</div>'; 
+  }
 }
 
 function renderChips() {
@@ -33,18 +59,21 @@ function renderChips() {
 function cover(p) {
   return p.images && p.images[0] ? `<img src="${esc(p.images[0])}" alt="${esc(p.name)}" loading="lazy">` : esc(p.name.slice(0, 1));
 }
+
 function priceHtml(p) {
   return eff(p) < p.price ? `<s>${egp(p.price)}</s><em>${egp(eff(p))}</em>` : egp(p.price);
 }
 
 function renderGrid() {
   const q = $('#search').value.trim().toLowerCase();
-  let list = S.products.filter(p => (filter === 'all' || p.catalog === filter) &&
-    (!q || (p.name + ' ' + p.tags + ' ' + p.description).toLowerCase().includes(q)));
+  let list = S.products.filter(p => (filter === 'all' || p.catalog_id === filter) &&
+    (!q || (p.name + ' ' + (p.tags || '') + ' ' + p.description).toLowerCase().includes(q)));
+  
   const sort = $('#sort').value;
   if (sort === 'low') list.sort((a, b) => eff(a) - eff(b));
   else if (sort === 'high') list.sort((a, b) => eff(b) - eff(a));
   else list.sort((a, b) => (b.featured - a.featured));
+
   $('#grid').innerHTML = list.length ? list.map(p => `
     <div class="card" data-id="${p.id}">
       <div class="ph">${cover(p)}${p.stock < 1 ? '<span class="tag out">Sold out</span>' : eff(p) < p.price ? '<span class="tag">Sale</span>' : ''}</div>
@@ -55,11 +84,12 @@ function renderGrid() {
         <button class="btn small" ${p.stock < 1 ? 'disabled' : ''} data-add="${p.id}" style="margin-top:auto">Add to cart</button>
       </div>
     </div>`).join('') : '<div class="empty">No products found.</div>';
+
   document.querySelectorAll('.card').forEach(c => c.onclick = e => {
     if (e.target.dataset.add) return;
     openProduct(c.dataset.id);
   });
-  document.querySelectorAll('[data-add]').forEach(b => b.onclick = () => addToCart(b.dataset.add, 1, true));
+  document.querySelectorAll('[data-add]').forEach(b => b.onclick = () => addToCart(b.dataset.add, 1, false));
 }
 
 function prod(id) { return S.products.find(p => p.id === id); }
@@ -68,6 +98,12 @@ function addToCart(id, qty, open) {
   const p = prod(id); if (!p || p.stock < 1) return;
   Cart.add(id, qty, p.stock);
   renderCart();
+  
+  // Animation for the cart icon
+  const btn = $('#openCart');
+  btn.classList.add('bounce');
+  setTimeout(() => btn.classList.remove('bounce'), 500);
+
   if (open) openCart();
 }
 
@@ -87,7 +123,7 @@ function openProduct(id) {
           <h2>${esc(p.name)}</h2>
           <div class="price" style="font-size:1.2rem">${priceHtml(p)}</div>
           <p>${esc(p.description)}</p>
-          ${p.howToUse ? `<h3 style="font-size:1rem">How to use</h3><p>${esc(p.howToUse)}</p>` : ''}
+          ${p.how_to_use ? `<h3 style="font-size:1rem">How to use</h3><p>${esc(p.how_to_use)}</p>` : ''}
           ${p.stock > 0 && p.stock <= 3 ? `<div class="low">Only ${p.stock} left</div>` : ''}
           ${p.stock < 1 ? '<p class="low">Sold out</p>' : `
           <div style="display:flex;gap:12px;align-items:center;margin-top:12px">
@@ -109,7 +145,6 @@ function openProduct(id) {
 }
 
 function renderCart() {
-  // clamp to current stock and drop unavailable items
   const c = Cart.get();
   for (const id of Object.keys(c)) {
     const p = prod(id);
@@ -130,7 +165,7 @@ function renderCart() {
     </div>`;
   }).join('') : '<p class="note" style="padding:20px 0">Your cart is empty.</p>';
   $('#cartSub').textContent = egp(sub);
-  const min = S.settings.minOrder || 0;
+  const min = S.settings.min_order || 0;
   const ok = sub >= min && ids.length > 0;
   $('#minNote').innerHTML = ids.length && !ok ? `<div class="warn">Add ${egp(min - sub)} more to reach the ${egp(min)} minimum.</div>` : `Minimum order ${egp(min)}. Delivery is added at checkout.`;
   const b = $('#checkoutBtn');
@@ -139,6 +174,7 @@ function renderCart() {
   document.querySelectorAll('[data-p]').forEach(x => x.onclick = () => { const p = prod(x.dataset.p); Cart.add(x.dataset.p, 1, p.stock); renderCart(); });
   document.querySelectorAll('[data-r]').forEach(x => x.onclick = () => { Cart.setQty(x.dataset.r, 0); renderCart(); });
 }
+
 function openCart() { $('#drawer').classList.add('open'); $('#scrim').classList.add('open'); }
 function closeCart() { $('#drawer').classList.remove('open'); $('#scrim').classList.remove('open'); }
 
@@ -157,7 +193,6 @@ $('#welcomeForm').onsubmit = e => {
   $('#welcomeOv').classList.remove('open');
 };
 
-// Hidden admin shortcut: click the logo 5 times within 3 seconds.
 let taps = [];
 $('#brand').onclick = () => {
   const now = Date.now();
